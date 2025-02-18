@@ -1,0 +1,269 @@
+main:
+/*
+  GestureControl_Complete.ino
+
+  This sketch uses two HC‑SR04 sensors to detect various hand gestures.
+  
+  Gestures and their mapped commands:
+  
+  • Circular Clockwise        -> ROTATE_VIDEO_RIGHT
+  • Circular Counterclockwise -> ROTATE_VIDEO_LEFT
+  • Tilt Left                 -> DECREASE_CONTRAST
+  • Tilt Right                -> INCREASE_CONTRAST
+  • Swipe Left (Two Hands)    -> PREVIOUS_MEDIA
+  • Swipe Right (Two Hands)   -> NEXT_MEDIA
+  • Hand Hover (Hold 2 Sec)   -> TOGGLE_FULLSCREEN
+  • Hand Push Forward         -> RESET_EFFECTS
+  • Hand Pull Backward        -> SLOW_DOWN_PLAYBACK
+  • Pinch Gesture             -> MUTE_UNMUTE_AUDIO
+  • Three-Finger Slide        -> TAKE_SNAPSHOT
+  
+  **Wiring:**
+    Sensor 1 (Left):   trigPin1 = 2,  echoPin1 = 3
+    Sensor 2 (Right):  trigPin2 = 4,  echoPin2 = 5
+*/
+
+/// ----- PIN ASSIGNMENTS -----
+const int trigPin1 = 2;  // Sensor 1 (left)
+const int echoPin1 = 3;
+const int trigPin2 = 4;  // Sensor 2 (right)
+const int echoPin2 = 5;
+
+/// ----- THRESHOLDS & TIMING PARAMETERS -----
+/// (Adjust these based on your experimental setup)
+const int activationThreshold = 20;  // cm; general activation level for a hand
+const int pinchThreshold      = 5;    // cm; extremely close (pinch)
+const unsigned long gestureTimeout = 1000;  // ms window for two-hand gestures
+const unsigned long hoverDuration  = 2000;  // ms for a hand hover
+const int tiltThreshold = 10;               // difference in cm for tilt detection
+
+/// ----- GLOBAL VARIABLES FOR GESTURE DETECTION -----
+/// For two-hand (swipe/circular) gestures:
+unsigned long sensor1TriggerTime = 0;
+unsigned long sensor2TriggerTime = 0;
+unsigned long circularStartTime   = 0;
+int circularCount = 0;           // counts alternating triggers
+int lastCircularSensor = 0;      // 1 for sensor1, 2 for sensor2
+
+/// For one-hand gestures using sensor2:
+unsigned long hoverStartTime = 0;
+bool hovering = false;
+float lastSensor2Distance = 1000;  // initialize to a high value
+unsigned long pushStartTime = 0;
+bool pushActive = false;
+unsigned long pullStartTime = 0;
+bool pullActive = false;
+
+/// For three-finger slide simulation on sensor2:
+unsigned long fingerSlideStartTime = 0;
+int fingerSlideCount = 0;
+bool threeFingerDetected = false;
+
+
+/// ----- HELPER FUNCTION: Measure Distance from HC-SR04 -----
+long measureDistance(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH);
+  long distance = duration * 0.034 / 2;
+  return distance;
+}
+
+void setup() {
+  Serial.begin(9600);
+  
+  // Setup sensor pins for Sensor 1
+  pinMode(trigPin1, OUTPUT);
+  pinMode(echoPin1, INPUT);
+  
+  // Setup sensor pins for Sensor 2
+  pinMode(trigPin2, OUTPUT);
+  pinMode(echoPin2, INPUT);
+  
+  // Initialize gesture variables
+  sensor1TriggerTime = 0;
+  sensor2TriggerTime = 0;
+  circularStartTime = 0;
+  circularCount = 0;
+  lastCircularSensor = 0;
+  hoverStartTime = 0;
+  hovering = false;
+  lastSensor2Distance = 1000;
+  pushActive = false;
+  pullActive = false;
+  fingerSlideStartTime = 0;
+  fingerSlideCount = 0;
+  threeFingerDetected = false;
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+  
+  // ----- Read Sensor Distances -----
+  long distance1 = measureDistance(trigPin1, echoPin1); // left sensor
+  long distance2 = measureDistance(trigPin2, echoPin2); // right sensor
+  
+  // =================== TWO-HAND GESTURES (Using both sensors) ===================
+  // If each sensor detects a hand (distance < activationThreshold)
+  if(distance1 < activationThreshold && sensor1TriggerTime == 0) {
+    sensor1TriggerTime = currentTime;
+    // For circular gestures, count alternating triggers:
+    if(lastCircularSensor != 1) {
+      circularCount++;
+      lastCircularSensor = 1;
+      if(circularStartTime == 0) circularStartTime = currentTime;
+    }
+  }
+  if(distance2 < activationThreshold && sensor2TriggerTime == 0) {
+    sensor2TriggerTime = currentTime;
+    if(lastCircularSensor != 2) {
+      circularCount++;
+      lastCircularSensor = 2;
+      if(circularStartTime == 0) circularStartTime = currentTime;
+    }
+  }
+  
+  // --- Swipe Gestures ---
+  if(sensor1TriggerTime != 0 && sensor2TriggerTime != 0) {
+    if(abs((long)(sensor2TriggerTime - sensor1TriggerTime)) < gestureTimeout) {
+      // Determine swipe direction based on which sensor triggered first:
+      if(sensor1TriggerTime < sensor2TriggerTime) {
+        Serial.println("PREVIOUS_MEDIA");  // swipe left (hand moves from left to right)
+      } else {
+        Serial.println("NEXT_MEDIA");        // swipe right (hand moves from right to left)
+      }
+      // Reset two-hand gesture variables:
+      sensor1TriggerTime = 0;
+      sensor2TriggerTime = 0;
+      circularCount = 0;
+      circularStartTime = 0;
+      lastCircularSensor = 0;
+    }
+  }
+  
+  // --- Circular Gestures ---
+  // If several alternating triggers occur within 1.5 sec, interpret as circular.
+  if(circularCount >= 4 && (currentTime - circularStartTime) < 1500) {
+    // Use the last sensor triggered to decide direction:
+    if(lastCircularSensor == 2) {
+      Serial.println("ROTATE_VIDEO_RIGHT");  // circular clockwise
+    } else {
+      Serial.println("ROTATE_VIDEO_LEFT");     // circular counterclockwise
+    }
+    // Reset circular variables:
+    circularCount = 0;
+    circularStartTime = 0;
+    sensor1TriggerTime = 0;
+    sensor2TriggerTime = 0;
+    lastCircularSensor = 0;
+  }
+  
+  // Reset two-hand variables if gesture window expired:
+  if(sensor1TriggerTime != 0 && (currentTime - sensor1TriggerTime > gestureTimeout))
+    sensor1TriggerTime = 0;
+  if(sensor2TriggerTime != 0 && (currentTime - sensor2TriggerTime > gestureTimeout))
+    sensor2TriggerTime = 0;
+  
+  // =================== TILT GESTURES (Comparing both sensors) ===================
+  // If the left sensor (sensor1) reading is significantly less than the right, hand tilts left.
+  // Conversely, if the right sensor is significantly lower, the hand tilts right.
+  if(distance1 < distance2 - tiltThreshold) {
+    Serial.println("DECREASE_CONTRAST");  // Tilt Left
+    delay(300);  // debounce
+  } else if(distance2 < distance1 - tiltThreshold) {
+    Serial.println("INCREASE_CONTRAST");  // Tilt Right
+    delay(300);  // debounce
+  }
+  
+  // =================== ONE-HAND GESTURES (Primarily using sensor2) ===================
+  
+  // --- Hand Hover ---
+  // If sensor2 remains below activationThreshold for more than hoverDuration, trigger hover.
+  if(distance2 < activationThreshold) {
+    if(!hovering) {
+      hoverStartTime = currentTime;
+      hovering = true;
+    } else {
+      if(currentTime - hoverStartTime > hoverDuration) {
+        Serial.println("TOGGLE_FULLSCREEN");
+        hovering = false; // reset
+        delay(500);
+      }
+    }
+  } else {
+    hovering = false;
+  }
+  
+  // --- Hand Push Forward (RESET_EFFECTS) ---
+  // If sensor2 distance decreases rapidly over consecutive readings.
+  float pushPullDeltaThreshold = 2.0; // cm change threshold per loop
+  if(distance2 < lastSensor2Distance - pushPullDeltaThreshold) {
+    if(!pushActive) {
+      pushStartTime = currentTime;
+      pushActive = true;
+    } else {
+      if(currentTime - pushStartTime > 500) { // sustained push (>500ms)
+        Serial.println("RESET_EFFECTS");
+        pushActive = false;
+        delay(500);
+      }
+    }
+  } else {
+    pushActive = false;
+  }
+  
+  // --- Hand Pull Backward (SLOW_DOWN_PLAYBACK) ---
+  if(distance2 > lastSensor2Distance + pushPullDeltaThreshold) {
+    if(!pullActive) {
+      pullStartTime = currentTime;
+      pullActive = true;
+    } else {
+      if(currentTime - pullStartTime > 500) { // sustained pull (>500ms)
+        Serial.println("SLOW_DOWN_PLAYBACK");
+        pullActive = false;
+        delay(500);
+      }
+    }
+  } else {
+    pullActive = false;
+  }
+  
+  // --- Pinch Gesture (MUTE_UNMUTE_AUDIO) ---
+  // If sensor2 distance drops below the pinch threshold.
+  if(distance2 < pinchThreshold) {
+    Serial.println("MUTE_UNMUTE_AUDIO");
+    delay(500);  // debounce
+  }
+  
+  // --- Three-Finger Slide (TAKE_SNAPSHOT) ---
+  // Simulated by detecting three quick activations on sensor2 within 1 second.
+  if(distance2 < activationThreshold) {
+    if(fingerSlideStartTime == 0) {
+      fingerSlideStartTime = currentTime;
+      fingerSlideCount = 1;
+    } else {
+      if(currentTime - fingerSlideStartTime < 1000) {
+        fingerSlideCount++;
+        if(fingerSlideCount >= 3 && !threeFingerDetected) {
+          Serial.println("TAKE_SNAPSHOT");
+          threeFingerDetected = true;
+          fingerSlideCount = 0;
+          fingerSlideStartTime = 0;
+          delay(500);
+        }
+      } else {
+        fingerSlideCount = 1;
+        fingerSlideStartTime = currentTime;
+        threeFingerDetected = false;
+      }
+    }
+  }
+  
+  // Save sensor2 distance for push/pull comparison in the next loop
+  lastSensor2Distance = distance2;
+  
+  delay(50); // short delay for loop stability
+}
